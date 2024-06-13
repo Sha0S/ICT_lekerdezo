@@ -102,6 +102,7 @@ fn generate_serials(serial: String, position: u8, max_pos: u8) -> Vec<String> {
 
 struct Panel {
     boards: u8,
+    product: String,
     selected_pos: u8,
     serials: Vec<String>,
     results: Vec<PanelResult>
@@ -109,16 +110,17 @@ struct Panel {
 
 impl Panel {
     fn empty() -> Self {
-        Panel { boards: 0, selected_pos: 0, serials: Vec::new(), results: Vec::new()}
+        Panel { boards: 0, product: String::new(), selected_pos: 0, serials: Vec::new(), results: Vec::new()}
     }
 
     fn is_empty(&self) -> bool {
         self.serials.is_empty()
     }
 
-    fn new(boards: u8) -> Self {
+    fn new(boards: u8, product: String) -> Self {
         Panel { 
             boards,
+            product,
             selected_pos: 0,
             serials: Vec::new(),
             results: Vec::new() }
@@ -239,7 +241,7 @@ impl eframe::App for IctResultApp {
 
                 let mut text_edit = egui::TextEdit::singleline(&mut self.DMC_input).desired_width(300.0).show(ui);
 
-                if text_edit.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if text_edit.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.DMC_input.len() > 15 {
                     println!("Query DMC: {}", self.DMC_input);
                     let DMC = self.DMC_input.clone();
 
@@ -251,16 +253,18 @@ impl eframe::App for IctResultApp {
 
                     // Identify product type
                     let mut boards_on_panel = 1;
+                    let mut product_name = "Unknown".to_string();
                     println!("Product id: {}", &DMC[13..]);
                     for product in &self.products {
                         if DMC[13..].starts_with(&product.DMC) {
                             println!("Product is: {}", product.name);
+                            product_name = product.name.clone();
                             boards_on_panel = product.boards_on_panel;
                             break;
                         }
                     }
 
-                    self.panel = Arc::new(Mutex::new(Panel::new(boards_on_panel)));
+                    self.panel = Arc::new(Mutex::new(Panel::new(boards_on_panel, product_name)));
 
                     // 1 - query to given DMC
                     // 2 - from Log_file_name get the board position
@@ -348,6 +352,10 @@ impl eframe::App for IctResultApp {
             let panel_lock = self.panel.lock().unwrap();
 
             if !panel_lock.is_empty() {
+                ui.label(format!("Product: {}", panel_lock.product));
+                ui.label(format!("Main DMC: {}", panel_lock.serials[0]));
+                ui.separator();
+
                 TableBuilder::new(ui)
                 .striped(true)
                 .column(Column::initial(40.0).resizable(true))
@@ -356,21 +364,21 @@ impl eframe::App for IctResultApp {
                 .column(Column::initial(150.0).resizable(true)) // Time
                 .header(20.0, |mut header| {
                     header.col(|ui| {
-                        ui.heading("#");
+                        ui.label("#");
                     });
                     header.col(|ui| {
-                        ui.heading("Results");
+                        ui.label("Results");
                     });
                     header.col(|ui| {
-                        ui.heading("Station");
+                        ui.label("Station");
                     });
                     header.col(|ui| {
-                        ui.heading("Time");
+                        ui.label("Time");
                     });
                 })
                 .body(|mut body| {
                     for (x, result) in panel_lock.results.iter().enumerate() {
-                        body.row(16.0, |mut row| {
+                        body.row(14.0, |mut row| {
                             row.col(|ui| {
                                 ui.label(format!("{}", x+1));
                             });
