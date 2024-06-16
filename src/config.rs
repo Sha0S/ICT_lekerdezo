@@ -1,5 +1,7 @@
-use std::path::PathBuf;
+#![allow(clippy::assigning_clones)]
+
 use ini::Ini;
+use std::path::PathBuf;
 
 #[derive(Default)]
 pub struct Config {
@@ -7,11 +9,16 @@ pub struct Config {
     pub database: String,
     pub password: String,
     pub username: String,
+
+    pub log_viewer: String,
 }
 
 impl Config {
     pub fn read(path: PathBuf) -> anyhow::Result<Config> {
-        let mut c = Config::default();
+        let mut c = Config {
+            log_viewer: ".\\ict_lr.exe".to_owned(),
+            ..Default::default()
+        };
 
         if let Ok(config) = Ini::load_from_file(path.clone()) {
             if let Some(jvserver) = config.section(Some("JVSERVER")) {
@@ -40,6 +47,13 @@ impl Config {
                 }
             } else {
                 return Err(anyhow::Error::msg("ER: Could not find [JVSERVER] field!"));
+            }
+
+            if let Some(app) = config.section(Some("APP")) {
+                if let Some(viewer) = app.get("VIEWER") {
+                    c.log_viewer = viewer.to_owned();
+                    println!("using {viewer}");
+                }
             }
         } else {
             return Err(anyhow::Error::msg(format!(

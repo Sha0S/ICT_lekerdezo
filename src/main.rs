@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![allow(clippy::assigning_clones)]
 
 use std::{fs, path::PathBuf, sync::{Arc, Mutex}};
 
@@ -64,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     _ = eframe::run_native(
         format!("ICT Lekérdező ({VERSION})").as_str(),
         options,
-        Box::new(|_| Box::new(IctResultApp::default(client))),
+        Box::new(|_| Box::new(IctResultApp::default(client, config.log_viewer))),
     );
 
     Ok(())
@@ -78,7 +79,7 @@ async fn connect(tib_config: tiberius::Config) -> anyhow::Result<Client<Compat<T
     Ok(client)
 }
 
-fn get_pos_from_logname(log_file_name: String) -> u8 {
+fn get_pos_from_logname(log_file_name: &str) -> u8 {
     println!("{}", log_file_name);
     let filename = log_file_name.split(&['/','\\']).last().unwrap();
     let pos = filename.split_once('-').unwrap();
@@ -126,7 +127,7 @@ impl Panel {
             results: Vec::new() }
     }
 
-    fn push(&mut self, position: u8, serial: String, station: String, result: String, date_time: NaiveDateTime) {
+    fn push(&mut self, position: u8, serial: String, station: String, result: String, date_time: NaiveDateTime, log_file_name: String) {
         if self.serials.is_empty() {
             self.serials = generate_serials(serial, position, self.boards);
             self.selected_pos = position;
@@ -140,10 +141,13 @@ impl Panel {
                 BoardResult::Failed
             };
 
-        self.results.push(PanelResult { time: date_time, station, results })
+        let mut logs = vec![String::new(); self.boards as usize ];
+        logs[position as usize] = log_file_name;
+
+        self.results.push(PanelResult { time: date_time, station, results, logs })
     }
 
-    fn add_result(&mut self, i: u8, result: String) {
+    fn add_result(&mut self, i: u8, result: String, log: String) {
         let res = if result == "Passed" {
             BoardResult::Passed
         } else {
@@ -153,6 +157,7 @@ impl Panel {
         for x in self.results.iter_mut() {
             if x.results[i as usize] == BoardResult::Unknown {
                 x.results[i as usize] = res;
+                x.logs[i as usize] = log;
                 break;
             }
         }
@@ -163,6 +168,7 @@ struct PanelResult {
     time: NaiveDateTime,
     station: String,
     results: Vec<BoardResult>,
+    logs: Vec<String>
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -215,6 +221,7 @@ fn load_products() -> Vec<IctProducts> {
 
 struct IctResultApp {
     client: Arc<tokio::sync::Mutex<Client<Compat<TcpStream>>>>,
+    log_viewer: String,
 
     products: Vec<IctProducts>,
     panel: Arc<Mutex<Panel>>,
@@ -223,12 +230,37 @@ struct IctResultApp {
 }
 
 impl IctResultApp {
-    fn default(client: Client<Compat<TcpStream>>) -> Self {
+    fn default(client: Client<Compat<TcpStream>>, log_viewer: String) -> Self {
         IctResultApp {
             client: Arc::new(tokio::sync::Mutex::new(client)),
+            log_viewer,
             products: load_products(),
             panel: Arc::new(Mutex::new(Panel::empty())),
             DMC_input: String::new(),
+        }
+    }
+
+    fn open_log(&self, log: &str) {
+        println!("Trying to open log: {log}");
+        let path = PathBuf::from(log);
+    
+        if path.exists() {
+            let res = std::process::Command::new(&self.log_viewer).arg(log).spawn();
+            println!("{:?}", res );
+        } else {
+            // try log_dir\\date_of_log\\log_filename
+            let dir = path.parent().unwrap();
+            let file = path.file_name().unwrap();
+            let (_, date_str) = file.to_str().unwrap().split_once('-').unwrap();
+            let sub_dir = format!("20{}_{}_{}", &date_str[0..2],&date_str[2..4],&date_str[4..6]);
+            let mut final_path = dir.join(sub_dir);
+            final_path.push(file);
+
+            println!("Final path: {:?}", final_path);
+            if final_path.exists() {
+                let res = std::process::Command::new(&self.log_viewer).arg(final_path).spawn();
+                println!("{:?}", res );
+            }
         }
     }
 }
@@ -280,7 +312,10 @@ impl eframe::App for IctResultApp {
                         let mut c = client_lock.lock().await;                        
 
                         let mut query =
-                            Query::new("SELECT [Serial_NMBR],[Station],[Result],[Date_Time],[Log_File_Name] FROM [dbo].[SMT_Test] WHERE [Serial_NMBR] = @P1");
+                            Query::new(
+                            "SELECT [Serial_NMBR],[Station],[Result],[Date_Time],[Log_File_Name] 
+                            FROM [dbo].[SMT_Test] WHERE [Serial_NMBR] = @P1 
+                            ORDER BY [Date_Time] DESC");
                         query.bind(&DMC);
 
                         println!("Query: {:?}", query);
@@ -299,9 +334,9 @@ impl eframe::App for IctResultApp {
                                         let date_time = x.get::<NaiveDateTime, usize>(3).unwrap();
                                         let log_file_name = x.get::<&str, usize>(4).unwrap().to_owned();
                                         
-                                        position = get_pos_from_logname(log_file_name);
+                                        position = get_pos_from_logname(&log_file_name);
 
-                                        panel_lock.lock().unwrap().push(position, serial, station, result, date_time);
+                                        panel_lock.lock().unwrap().push(position, serial, station, result, date_time, log_file_name);
 
                                         failed_query = false;
                                     }
@@ -319,7 +354,7 @@ impl eframe::App for IctResultApp {
                                 let DMC = panel_lock.lock().unwrap().serials[i as usize].clone();
 
                                 let mut query =
-                                Query::new("SELECT [Result] FROM [dbo].[SMT_Test] WHERE [Serial_NMBR] = @P1");
+                                Query::new("SELECT [Result],[Log_File_Name] FROM [dbo].[SMT_Test] WHERE [Serial_NMBR] = @P1 ORDER BY [Date_Time] DESC");
                                 query.bind(&DMC);
         
                                 println!("Query #{i}: {:?}", query);
@@ -329,10 +364,11 @@ impl eframe::App for IctResultApp {
                                         let row = row.unwrap();
                                         match row {
                                             tiberius::QueryItem::Row(x) => {
-                                                // [Result]
+                                                // [Result], [Log_File_Name]
                                                 let result = x.get::<&str, usize>(0).unwrap().to_owned();
+                                                let log = x.get::<&str, usize>(1).unwrap().to_owned();
                                                 print!("{}, ", result);
-                                                panel_lock.lock().unwrap().add_result(i, result);
+                                                panel_lock.lock().unwrap().add_result(i, result, log);
                                             }
                                             tiberius::QueryItem::Metadata(_) => (),
                                         }
@@ -388,7 +424,9 @@ impl eframe::App for IctResultApp {
 
                                 ui.horizontal( |ui|
                                     for (i, board) in result.results.iter().enumerate() {
-                                        draw_result_box(ui, board, i == panel_lock.selected_pos as usize);
+                                        if draw_result_box(ui, board, i == panel_lock.selected_pos as usize).clicked() {
+                                            self.open_log(&result.logs[i]);
+                                        }
                                     }
                                 );
                             });
@@ -409,13 +447,15 @@ impl eframe::App for IctResultApp {
 fn draw_result_box(ui: &mut egui::Ui, result: &BoardResult, highlight: bool) -> egui::Response {
     let desired_size = egui::vec2(10.0, 10.0); 
 
-    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
     let rect = if highlight {
         rect.expand(2.0)
     } else { rect };
 
     if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let rect = rect.expand(visuals.expansion);
         ui.painter().rect_filled(rect, 2.0, result.into_color());
     }
 
